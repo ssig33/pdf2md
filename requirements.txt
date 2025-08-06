@@ -1,0 +1,4 @@
+pdfplumber
+openai>=1.40.0
+requests
+pillow

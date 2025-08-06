@@ -1,238 +1,159 @@
-#!/usr/bin/env python3
+import fitz
+import requests
+import json
 import os
 import sys
-import argparse
-import pdfplumber
-import requests
-from openai import OpenAI
-from PIL import Image
-import io
-import base64
-import json
-from pathlib import Path
+from typing import List, Dict, Optional
 
-class PDF2MD:
+class PDF2MDConverter:
     def __init__(self):
         self.gyazo_token = os.getenv('GYAZO_TOKEN')
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
         
         if not self.gyazo_token:
-            raise ValueError("GYAZO_TOKEN environment variable is required")
+            raise ValueError("GYAZO_TOKEN環境変数が設定されていません")
         if not self.openai_api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
-        
-        self.client = OpenAI(api_key=self.openai_api_key)
-    
-    def extract_pdf_content_with_layout(self, pdf_path):
-        """PDFからテキストと画像を位置情報と共に抽出"""
-        pages_data = []
-        
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages):
-                page_elements = []
-                
-                # テキストを行ごとに抽出（位置情報付き）
-                lines = page.extract_text_lines()
-                for line in lines:
-                    page_elements.append({
-                        'type': 'text',
-                        'content': line['text'],
-                        'bbox': (line['x0'], line['top'], line['x1'], line['bottom']),
-                        'y_pos': line['top']
-                    })
-                
-                # 画像抽出（位置情報付き）
-                print(f"Page {page_num + 1}: 画像検索中...")
-                if hasattr(page, 'images') and page.images:
-                    print(f"  発見した画像: {len(page.images)}個")
-                    for img_idx, img in enumerate(page.images):
-                        print(f"  画像 {img_idx + 1}: {img['name']} ({img['width']}x{img['height']})")
-                        try:
-                            # dict形式の画像オブジェクトから座標を取得
-                            bbox = (img['x0'], img['y0'], img['x1'], img['y1'])
-                            print(f"    bbox: {bbox}")
-                            
-                            image_obj = page.crop(bbox).to_image()
-                            page_elements.append({
-                                'type': 'image',
-                                'image': image_obj.original,
-                                'bbox': bbox,
-                                'y_pos': bbox[1],  # top position
-                                'page': page_num + 1,
-                                'index': img_idx
-                            })
-                            print(f"    抽出成功")
-                        except Exception as e:
-                            print(f"    画像抽出エラー: {e}")
-                else:
-                    print(f"  画像なし")
-                
-                # Y位置でソート（上から下の順）
-                page_elements.sort(key=lambda x: x['y_pos'])
-                
-                pages_data.append({
-                    'page_num': page_num + 1,
-                    'elements': page_elements
-                })
-        
-        return pages_data
-    
-    def upload_to_gyazo(self, image):
-        """画像をGyazoにアップロード"""
-        # PILImageをbytesに変換
-        img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='PNG')
-        img_byte_arr = img_byte_arr.getvalue()
-        
+            raise ValueError("OPENAI_API_KEY環境変数が設定されていません")
+
+    def upload_image_to_gyazo(self, image_bytes: bytes) -> Optional[str]:
         url = "https://upload.gyazo.com/api/upload"
-        files = {'imagedata': ('image.png', img_byte_arr, 'image/png')}
+        files = {'imagedata': image_bytes}
         data = {'access_token': self.gyazo_token}
         
         try:
             response = requests.post(url, files=files, data=data)
-            response.raise_for_status()
-            return response.json()['url']
+            if response.status_code == 200:
+                result = response.json()
+                return result.get('url')
+            else:
+                print(f"Gyazoアップロード失敗: {response.status_code}")
+                return None
         except Exception as e:
             print(f"Gyazoアップロードエラー: {e}")
             return None
-    
-    def build_structured_content(self, pages_data, image_urls):
-        """ページ構造を考慮してコンテンツを構築"""
-        structured_content = ""
-        image_counter = 0
+
+    def extract_pdf_content(self, pdf_path: str) -> List[Dict]:
+        document = fitz.open(pdf_path)
+        pages_data = []
         
-        for page_data in pages_data:
-            page_num = page_data['page_num']
-            structured_content += f"\n\n--- Page {page_num} ---\n"
+        for page_num in range(len(document)):
+            page = document.load_page(page_num)
             
-            for element in page_data['elements']:
-                if element['type'] == 'text':
-                    structured_content += element['content'] + "\n"
-                elif element['type'] == 'image':
-                    if image_counter < len(image_urls) and image_urls[image_counter]:
-                        structured_content += f"\n[画像 {image_counter + 1}: Page {page_num}]\n![Image](<!-- IMAGE_PLACEHOLDER_{image_counter} -->)\n\n"
-                        image_counter += 1
-                    else:
-                        structured_content += f"\n[画像: Page {page_num} - アップロード失敗]\n\n"
+            text = page.get_text("text")
+            image_urls = []
+            
+            image_list = page.get_images(full=True)
+            if image_list.__len__() < 5:
+                for img_index, img in enumerate(image_list):
+                    xref = img[0]
+                    base_image = document.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    
+                    gyazo_url = self.upload_image_to_gyazo(image_bytes)
+                    if gyazo_url:
+                        image_urls.append(gyazo_url)
+                        print(f"ページ {page_num + 1} の画像 {img_index + 1} をGyazoにアップロード: {gyazo_url}")
+            
+            page_data = {
+                'page_number': page_num + 1,
+                'text': text.strip(),
+                'images': image_urls
+            }
+            pages_data.append(page_data)
+            print(f"ページ {page_num + 1} を処理完了")
         
-        return structured_content
+        document.close()
+        return pages_data
 
-    def summarize_with_openai(self, pages_data, image_urls):
-        """OpenAI APIでページ構造を考慮して要約・構造化"""
-        # 構造化されたコンテンツを構築
-        structured_content = self.build_structured_content(pages_data, image_urls)
+    def generate_markdown_summary(self, pages_data: List[Dict]) -> str:
+        content_description = []
+        for page in pages_data:
+            page_desc = f"ページ{page['page_number']}には以下のテキストがあります：\n{page['text'][:500]}..."
+            if page['images']:
+                page_desc += f"\nまた、{len(page['images'])}個の画像があります："
+                for i, img_url in enumerate(page['images']):
+                    page_desc += f"\n画像{i+1}: {img_url}"
+            content_description.append(page_desc)
         
-        # 実際にアップロードされた画像の数を確認
-        valid_image_count = len([url for url in image_urls if url])
-        
-        if valid_image_count == 0:
-            image_instruction = """
-重要: このPDFには画像がないか、画像の抽出に失敗しました。
-画像に関する言及や参照は一切しないでください。
-実在しない図表やイラストについて言及することは禁止です。
-テキスト内容のみに基づいて要約してください。"""
-        else:
-            image_instruction = f"""
-このPDFには{valid_image_count}個の画像が含まれています。
-画像とテキストの関連性を保ちながら、適切な箇所に画像を配置してください。
-実際に抽出された画像のみを参照し、存在しない画像については言及しないでください。"""
-        
-        prompt = f"""以下のPDF内容を日本語でわかりやすく要約し、Markdown形式で構造化してください。
+        prompt = f"""以下のPDFの各ページの内容を日本語で包括的に要約し、適切なMarkdown形式で出力してください。
+画像がある場合は、その画像へのリンクを適切に配置してください。
 
-{image_instruction}
+{chr(10).join(content_description)}
 
-要約の際は以下を考慮してください：
-- 文書の全体的な構造と流れを把握する
-- ページごとの内容を統合して論理的な構造にする
-- 存在しない情報や画像について推測や創造をしない
+要求：
+1. 日本語での包括的な内容要約
+2. 適切なMarkdown形式（見出し、リスト、画像リンクなど）
+3. 画像は ![画像の説明](画像URL) の形式で挿入
+  - 存在しない画像を創造、予測してはいけません、提供されたデータに基づいてください。提供されたデータに画像が含まれない場合、画像リンクは挿入しないでください。
+4. 論理的な構造で整理された内容
+5. 数値的なデータが含まれる場合は適切にテーブルで表現
 
-出力形式：
-# 文書の概要
+もとのデータはページごとに分かれていますが、これは全体の論理構成とは一致しないはずですから、〜ページには以下の内容がある、という形でまとめてはいけません。あくまで与えられたデータから論理構成を再構築し、適切に画像リンクを配置しつつMarkdownにしてください。
 
-# 主要なポイント
-- 重要なポイント1
-- 重要なポイント2
-
-# 詳細内容
-## セクション1
-内容の説明
-
-## セクション2
-内容の説明
-
-PDF内容:
-{structured_content}
+Markdownそれだけを出力してください。余計なものは出力しないでください。
 """
+
+        headers = {
+            'Authorization': f'Bearer {self.openai_api_key}',
+            'Content-Type': 'application/json'
+        }
         
-        response = self.client.chat.completions.create(
-            model="gpt-4.1-mini",  # DESIGN.mdの指示通り
-            messages=[
-                {"role": "user", "content": prompt}
+        data = {
+            'model': 'gpt-4.1-mini',
+            'messages': [
+                {'role': 'user', 'content': prompt}
             ],
-            temperature=0.3
-        )
+            'max_tokens': 4000,
+            'temperature': 0.7
+        }
         
-        # 画像プレースホルダーを実際のURLに置換
-        result = response.choices[0].message.content
-        for i, url in enumerate(image_urls):
-            if url:
-                result = result.replace(f"<!-- IMAGE_PLACEHOLDER_{i} -->", url)
-        
-        return result
-    
-    def convert(self, input_pdf, output_md):
-        """メイン変換処理"""
-        print(f"PDFを解析中: {input_pdf}")
-        pages_data = self.extract_pdf_content_with_layout(input_pdf)
-        
-        # 全画像を収集
-        images = []
-        for page_data in pages_data:
-            for element in page_data['elements']:
-                if element['type'] == 'image':
-                    images.append(element)
-        
-        if not any(page_data['elements'] for page_data in pages_data):
-            print("警告: PDFからコンテンツが抽出できませんでした")
-        
-        print(f"画像を処理中: {len(images)}個の画像を発見")
-        image_urls = []
-        for img_data in images:
-            print(f"  Page {img_data['page']} の画像をGyazoにアップロード中...")
-            url = self.upload_to_gyazo(img_data['image'])
-            if url:
-                image_urls.append(url)
-                print(f"    アップロード完了: {url}")
+        try:
+            response = requests.post(
+                'https://api.openai.com/v1/chat/completions',
+                headers=headers,
+                json=data
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result['choices'][0]['message']['content']
             else:
-                image_urls.append(None)
-                print(f"    アップロード失敗")
+                print(f"OpenAI API エラー: {response.status_code}")
+                return f"API呼び出しに失敗しました: {response.text}"
+        except Exception as e:
+            print(f"OpenAI API呼び出しエラー: {e}")
+            return f"エラーが発生しました: {e}"
+
+    def convert_pdf_to_markdown(self, pdf_path: str, output_path: Optional[str] = None):
+        if not output_path:
+            output_path = pdf_path.replace('.pdf', '.md')
         
-        print("OpenAI APIで要約中...")
-        markdown_content = self.summarize_with_openai(pages_data, image_urls)
+        print(f"PDF処理開始: {pdf_path}")
+        pages_data = self.extract_pdf_content(pdf_path)
         
-        # Markdownファイルに保存
-        with open(output_md, 'w', encoding='utf-8') as f:
+        print("OpenAI APIで要約生成中...")
+        markdown_content = self.generate_markdown_summary(pages_data)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
             f.write(markdown_content)
         
-        print(f"変換完了: {output_md}")
+        print(f"Markdownファイル作成完了: {output_path}")
+        return output_path
 
 def main():
-    parser = argparse.ArgumentParser(description='PDF to Markdown converter')
-    parser.add_argument('input', help='Input PDF file')
-    parser.add_argument('output', help='Output Markdown file')
-    
-    args = parser.parse_args()
-    
-    if not os.path.exists(args.input):
-        print(f"エラー: 入力ファイルが見つかりません: {args.input}")
+    if len(sys.argv) < 2:
+        print("使用法: python pdf2md.py <PDFファイルパス> [出力ファイルパス]")
         sys.exit(1)
     
+    pdf_path = sys.argv[1]
+    output_path = sys.argv[2] if len(sys.argv) > 2 else None
+    
     try:
-        converter = PDF2MD()
-        converter.convert(args.input, args.output)
+        converter = PDF2MDConverter()
+        converter.convert_pdf_to_markdown(pdf_path, output_path)
     except Exception as e:
         print(f"エラー: {e}")
         sys.exit(1)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -102,7 +102,7 @@ Markdownそれだけを出力してください。余計なものは出力しな
         }
         
         data = {
-            'model': 'gpt-4.1-mini',
+            'model': 'gpt-5-mini',
             'messages': [
                 {'role': 'user', 'content': prompt}
             ],

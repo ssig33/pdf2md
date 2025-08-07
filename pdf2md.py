@@ -3,6 +3,9 @@ import requests
 import json
 import os
 import sys
+import tempfile
+from urllib.parse import urlparse, unquote
+from pathlib import Path
 from typing import List, Dict, Optional
 
 class PDF2MDConverter:
@@ -124,6 +127,30 @@ Markdownそれだけを出力してください。余計なものは出力しな
             print(f"OpenAI API呼び出しエラー: {e}")
             return f"エラーが発生しました: {e}"
 
+    def download_pdf_from_url(self, url: str) -> str:
+        try:
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            parsed_url = urlparse(url)
+            path = unquote(parsed_url.path)
+            filename = Path(path).name
+            
+            if not filename or not filename.endswith('.pdf'):
+                filename = 'downloaded_pdf.pdf'
+            
+            temp_dir = tempfile.gettempdir()
+            local_path = os.path.join(temp_dir, filename)
+            
+            with open(local_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            print(f"PDFをダウンロードしました: {local_path}")
+            return local_path
+        except Exception as e:
+            raise Exception(f"PDFダウンロードに失敗しました: {e}")
+
     def convert_pdf_to_markdown(self, pdf_path: str, output_path: Optional[str] = None):
         if not output_path:
             output_path = pdf_path.replace('.pdf', '.md')
@@ -142,15 +169,35 @@ Markdownそれだけを出力してください。余計なものは出力しな
 
 def main():
     if len(sys.argv) < 2:
-        print("使用法: python pdf2md.py <PDFファイルパス> [出力ファイルパス]")
+        print("使用法: python pdf2md.py <PDFファイルパスまたはURL> [出力ファイルパス]")
         sys.exit(1)
     
-    pdf_path = sys.argv[1]
+    input_path = sys.argv[1]
     output_path = sys.argv[2] if len(sys.argv) > 2 else None
     
     try:
         converter = PDF2MDConverter()
+        
+        if input_path.startswith('http://') or input_path.startswith('https://'):
+            print(f"URLからPDFをダウンロード中: {input_path}")
+            pdf_path = converter.download_pdf_from_url(input_path)
+            
+            if not output_path:
+                parsed_url = urlparse(input_path)
+                path = unquote(parsed_url.path)
+                filename = Path(path).stem
+                if not filename:
+                    filename = 'downloaded_pdf'
+                output_path = f"{filename}.md"
+        else:
+            pdf_path = input_path
+        
         converter.convert_pdf_to_markdown(pdf_path, output_path)
+        
+        if input_path.startswith('http://') or input_path.startswith('https://'):
+            os.remove(pdf_path)
+            print(f"一時ファイルを削除しました: {pdf_path}")
+        
     except Exception as e:
         print(f"エラー: {e}")
         sys.exit(1)

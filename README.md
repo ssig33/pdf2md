@@ -1,0 +1,14 @@
+# pdf2md
+
+PDFíMarkdownk	€Yãƒ¸Î
+
+## ≈Åj∞É	p
+
+- `GYAZO_TOKEN`
+- `OPENAI_API_KEY`
+
+## Dπ
+
+```bash
+python pdf2md.py input.pdf
+```

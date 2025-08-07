@@ -1,13 +1,13 @@
 # pdf2md
 
-PDF�Markdownk	�Y����
+PDFを日本語のMarkdownにいいかんじに変換する
 
-## Łj��	p
+## 必要なもの
 
 - `GYAZO_TOKEN`
 - `OPENAI_API_KEY`
 
-## D�
+## 使い方
 
 ```bash
 python pdf2md.py input.pdf

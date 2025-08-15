@@ -46,7 +46,7 @@ class PDF2MDConverter:
             image_urls = []
             
             image_list = page.get_images(full=True)
-            if image_list.__len__() < 5:
+            if image_list.__len__() < 15:
                 for img_index, img in enumerate(image_list):
                     xref = img[0]
                     base_image = document.extract_image(xref)
@@ -106,8 +106,6 @@ Markdownそれだけを出力してください。余計なものは出力しな
             'messages': [
                 {'role': 'user', 'content': prompt}
             ],
-            'max_tokens': 4000,
-            'temperature': 0.7
         }
         
         try:
